@@ -1,0 +1,8 @@
+.git
+.gitignore
+**/*_test.go
+README.MD
+*.md
+.idea
+.vscode
+deploy/grafana/data
