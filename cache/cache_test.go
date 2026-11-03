@@ -109,15 +109,35 @@ func TestSet(t *testing.T) {
 
 		rec, ok := c.getRaw(t, "k1")
 		require.True(t, ok)
-		assert.Equal(t, profile.CustomerID, rec.data.CustomerID)
-		assert.Equal(t, 60, rec.ttl)
-		assert.True(t, rec.expiry.After(time.Now()))
-		assert.False(t, rec.lastAccessed.IsZero())
+		assert.Equal(t, profile.CustomerID, rec.Data.CustomerID)
+		assert.Equal(t, 60, rec.TTL)
+		assert.True(t, rec.Expiry.After(time.Now()))
+		assert.False(t, rec.LastAccessed.IsZero())
 		assert.Equal(t, 1, c.Stats().Set.Attempted)
 		assert.Equal(t, 1, c.Stats().Set.Success)
 		assert.Equal(t, 0, c.Stats().Set.Failure)
 		assert.InDelta(t, 1.0, c.Stats().Set.SuccessRatio, 0.001)
 		assert.InDelta(t, 0.0, c.Stats().Set.FailureRatio, 0.001)
+	})
+
+	t.Run("clones rewards so caller cannot mutate cached profile", func(t *testing.T) {
+		c := newTestCache(t, 10)
+		profile := testProfile("cust-1")
+		profile.Loyalty.RewardsAvailable = []loyalty.Reward{
+			{RewardID: "r1", Name: "Chips", PointsRequired: 50},
+		}
+		require.NoError(t, c.set(context.Background(), "k1", profile, 60))
+
+		profile.Loyalty.RewardsAvailable[0].Name = "MUTATED"
+		got, err := c.Get(context.Background(), "k1")
+		require.NoError(t, err)
+		require.Len(t, got.Loyalty.RewardsAvailable, 1)
+		assert.Equal(t, "Chips", got.Loyalty.RewardsAvailable[0].Name)
+
+		got.Loyalty.RewardsAvailable[0].Name = "MUTATED-AGAIN"
+		again, err := c.Get(context.Background(), "k1")
+		require.NoError(t, err)
+		assert.Equal(t, "Chips", again.Loyalty.RewardsAvailable[0].Name)
 	})
 
 	t.Run("rejects empty key", func(t *testing.T) {
@@ -168,8 +188,8 @@ func TestGet(t *testing.T) {
 
 		rec, err := c.get(context.Background(), "k1")
 		require.NoError(t, err)
-		assert.Equal(t, "cust-1", rec.data.CustomerID)
-		assert.False(t, rec.lastAccessed.IsZero())
+		assert.Equal(t, "cust-1", rec.Data.CustomerID)
+		assert.False(t, rec.LastAccessed.IsZero())
 		assert.Equal(t, 1, c.Stats().Hit)
 		assert.Equal(t, 0, c.Stats().Miss)
 		assert.InDelta(t, 1.0, c.Stats().HitRatio, 0.001)
@@ -181,7 +201,7 @@ func TestGet(t *testing.T) {
 		c := newTestCache(t, 10)
 		rec, err := c.get(context.Background(), "missing")
 		require.ErrorIs(t, err, ErrNotFound)
-		assert.Equal(t, record{}, rec)
+		assert.Equal(t, Record{}, rec)
 		assert.Equal(t, 0, c.Stats().Hit)
 		assert.Equal(t, 1, c.Stats().Miss)
 		assert.InDelta(t, 0.0, c.Stats().HitRatio, 0.001)
@@ -197,7 +217,7 @@ func TestGet(t *testing.T) {
 
 		got, err := c.get(context.Background(), "k1")
 		require.ErrorIs(t, err, ErrNotFound)
-		assert.Equal(t, record{}, got)
+		assert.Equal(t, Record{}, got)
 		assert.Equal(t, 1, c.Stats().Miss)
 	})
 
@@ -385,14 +405,14 @@ func TestLRUEviction(t *testing.T) {
 		accessed := time.Now().Add(-time.Minute)
 		short, ok := c.getRaw(t, "short")
 		require.True(t, ok)
-		short.lastAccessed = accessed
-		short.expiry = time.Now().Add(5 * time.Second)
+		short.LastAccessed = accessed
+		short.Expiry = time.Now().Add(5 * time.Second)
 		c.putRaw(t, "short", short)
 
 		long, ok := c.getRaw(t, "long")
 		require.True(t, ok)
-		long.lastAccessed = accessed
-		long.expiry = time.Now().Add(30 * time.Second)
+		long.LastAccessed = accessed
+		long.Expiry = time.Now().Add(30 * time.Second)
 		c.putRaw(t, "long", long)
 
 		require.NoError(t, c.set(context.Background(), "new", testProfile("new"), 60))
@@ -411,12 +431,12 @@ func TestLRUEviction(t *testing.T) {
 		now := time.Now()
 		a, ok := c.getRaw(t, "a")
 		require.True(t, ok)
-		a.lastAccessed = now.Add(-time.Second)
+		a.LastAccessed = now.Add(-time.Second)
 		c.putRaw(t, "a", a)
 
 		b, ok := c.getRaw(t, "b")
 		require.True(t, ok)
-		b.lastAccessed = now.Add(-time.Minute)
+		b.LastAccessed = now.Add(-time.Minute)
 		c.putRaw(t, "b", b)
 
 		require.NoError(t, c.set(context.Background(), "c", testProfile("c"), 60))
@@ -497,7 +517,7 @@ func TestSetMany(t *testing.T) {
 		require.NoError(t, err)
 		rec, ok := c.getRaw(t, "a")
 		require.True(t, ok)
-		assert.Equal(t, DefaultTTLSeconds, rec.ttl)
+		assert.Equal(t, DefaultTTLSeconds, rec.TTL)
 	})
 
 	t.Run("rejects negative ttl", func(t *testing.T) {
@@ -689,7 +709,7 @@ func TestConcurrentGetDoesNotClobberSet(t *testing.T) {
 
 	got, err := c.get(ctx, "k")
 	require.NoError(t, err)
-	assert.Equal(t, "settled", got.data.CustomerID)
+	assert.Equal(t, "settled", got.Data.CustomerID)
 }
 
 func TestConcurrentAccess(t *testing.T) {
