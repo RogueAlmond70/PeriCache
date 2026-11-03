@@ -1,8 +1,8 @@
 package cache
 
 import (
-	"Nandos-Pair-Coding/loyalty"
-	"Nandos-Pair-Coding/metrics"
+	"PeriCache/loyalty"
+	"PeriCache/metrics"
 	"context"
 	"errors"
 	"sync"
@@ -57,10 +57,16 @@ func testProfile(id string) loyalty.LoyaltyProfile {
 	}
 }
 
-func newTestCache(t *testing.T, maxSize int) (*ourCache, *mockLogger) {
+func newTestCache(t *testing.T, maxSize int) *ourCache {
+	t.Helper()
+	c, _ := newTestCacheWithLogger(t, maxSize)
+	return c
+}
+
+func newTestCacheWithLogger(t *testing.T, maxSize int) (*ourCache, *mockLogger) {
 	t.Helper()
 	logger := &mockLogger{}
-	c, err := NewCache(context.Background(), logger, maxSize, metrics.NewMemoryRecorder(), newMemoryStore())
+	c, err := NewCache(context.Background(), logger, maxSize, metrics.NewMemoryRecorder(), NewMemoryStore())
 	require.NoError(t, err)
 	require.NotNil(t, c)
 	return c, logger
@@ -68,16 +74,16 @@ func newTestCache(t *testing.T, maxSize int) (*ourCache, *mockLogger) {
 
 func TestNewCache(t *testing.T) {
 	t.Run("success with explicit max size", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		assert.Equal(t, 10, c.maxSize)
 		assert.NotNil(t, c.memoryStoreOrNil())
 	})
 
 	t.Run("defaults max size when less than 1", func(t *testing.T) {
-		c, _ := newTestCache(t, 0)
+		c := newTestCache(t, 0)
 		assert.Equal(t, 100, c.maxSize)
 
-		c2, _ := newTestCache(t, -5)
+		c2 := newTestCache(t, -5)
 		assert.Equal(t, 100, c2.maxSize)
 	})
 
@@ -96,7 +102,7 @@ func TestNewCache(t *testing.T) {
 
 func TestSet(t *testing.T) {
 	t.Run("stores loyalty profile", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		profile := testProfile("cust-1")
 		err := c.set(context.Background(), "k1", profile, 60)
 		require.NoError(t, err)
@@ -115,7 +121,7 @@ func TestSet(t *testing.T) {
 	})
 
 	t.Run("rejects empty key", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		err := c.set(context.Background(), "", testProfile("cust-1"), 60)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrNoKey)
@@ -124,7 +130,7 @@ func TestSet(t *testing.T) {
 	})
 
 	t.Run("rejects profile without customer id", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		err := c.set(context.Background(), "k1", loyalty.LoyaltyProfile{}, 60)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrNoData)
@@ -132,7 +138,7 @@ func TestSet(t *testing.T) {
 	})
 
 	t.Run("rejects invalid ttl", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		err := c.set(context.Background(), "k1", testProfile("cust-1"), 0)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrInvalidTTL)
@@ -144,7 +150,7 @@ func TestSet(t *testing.T) {
 	})
 
 	t.Run("cancelled context", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		err := c.set(ctx, "k1", testProfile("cust-1"), 60)
@@ -156,7 +162,7 @@ func TestSet(t *testing.T) {
 
 func TestGet(t *testing.T) {
 	t.Run("hit returns profile and updates lastAccessed", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		profile := testProfile("cust-1")
 		require.NoError(t, c.set(context.Background(), "k1", profile, 60))
 
@@ -172,7 +178,7 @@ func TestGet(t *testing.T) {
 	})
 
 	t.Run("miss returns ErrNotFound", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		rec, err := c.get(context.Background(), "missing")
 		require.ErrorIs(t, err, ErrNotFound)
 		assert.Equal(t, record{}, rec)
@@ -184,7 +190,7 @@ func TestGet(t *testing.T) {
 	})
 
 	t.Run("expired entry is not returned", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		require.NoError(t, c.set(context.Background(), "k1", testProfile("cust-1"), 60))
 
 		c.expireKey(t, "k1", time.Now().Add(-time.Second))
@@ -196,7 +202,7 @@ func TestGet(t *testing.T) {
 	})
 
 	t.Run("rejects empty key as failure", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		_, err := c.get(context.Background(), "")
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrNoKey)
@@ -205,7 +211,7 @@ func TestGet(t *testing.T) {
 	})
 
 	t.Run("cancelled context", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		_, err := c.get(ctx, "k1")
@@ -217,7 +223,7 @@ func TestGet(t *testing.T) {
 
 func TestDelete(t *testing.T) {
 	t.Run("removes existing key", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		require.NoError(t, c.set(context.Background(), "k1", testProfile("cust-1"), 60))
 		require.NoError(t, c.delete(context.Background(), "k1"))
 
@@ -226,13 +232,13 @@ func TestDelete(t *testing.T) {
 	})
 
 	t.Run("deleting missing key is a no-op success", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		require.NoError(t, c.delete(context.Background(), "missing"))
 		assert.Equal(t, 1, c.Stats().Delete.Success)
 	})
 
 	t.Run("rejects empty key", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		err := c.delete(context.Background(), "")
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrNoKey)
@@ -240,7 +246,7 @@ func TestDelete(t *testing.T) {
 	})
 
 	t.Run("cancelled context", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		err := c.delete(ctx, "k1")
@@ -252,7 +258,7 @@ func TestDelete(t *testing.T) {
 
 func TestClear(t *testing.T) {
 	t.Run("removes all entries", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		require.NoError(t, c.set(context.Background(), "k1", testProfile("cust-1"), 60))
 		require.NoError(t, c.set(context.Background(), "k2", testProfile("cust-2"), 60))
 		require.NoError(t, c.clear(context.Background()))
@@ -262,7 +268,7 @@ func TestClear(t *testing.T) {
 	})
 
 	t.Run("cancelled context does not clear data", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		require.NoError(t, c.set(context.Background(), "k1", testProfile("cust-1"), 60))
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
@@ -277,7 +283,7 @@ func TestClear(t *testing.T) {
 
 func TestSize(t *testing.T) {
 	t.Run("counts active entries only", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		require.NoError(t, c.set(context.Background(), "k1", testProfile("cust-1"), 60))
 		require.NoError(t, c.set(context.Background(), "k2", testProfile("cust-2"), 60))
 
@@ -290,7 +296,7 @@ func TestSize(t *testing.T) {
 	})
 
 	t.Run("cancelled context", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		n, err := c.size(ctx)
@@ -303,7 +309,7 @@ func TestSize(t *testing.T) {
 
 func TestKeys(t *testing.T) {
 	t.Run("lists active keys", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		require.NoError(t, c.set(context.Background(), "a", testProfile("cust-a"), 60))
 		require.NoError(t, c.set(context.Background(), "b", testProfile("cust-b"), 60))
 
@@ -316,7 +322,7 @@ func TestKeys(t *testing.T) {
 	})
 
 	t.Run("cancelled context", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		keys, err := c.keys(ctx)
@@ -329,7 +335,7 @@ func TestKeys(t *testing.T) {
 
 func TestRemoveExpiredEntries(t *testing.T) {
 	t.Run("removes only expired", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		require.NoError(t, c.set(context.Background(), "live", testProfile("live"), 60))
 		require.NoError(t, c.set(context.Background(), "dead", testProfile("dead"), 60))
 
@@ -341,7 +347,7 @@ func TestRemoveExpiredEntries(t *testing.T) {
 	})
 
 	t.Run("cancelled context", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		err := c.removeExpiredEntries(ctx)
@@ -352,7 +358,7 @@ func TestRemoveExpiredEntries(t *testing.T) {
 
 func TestLRUEviction(t *testing.T) {
 	t.Run("evicts least recently used when over capacity", func(t *testing.T) {
-		c, _ := newTestCache(t, 2)
+		c := newTestCache(t, 2)
 		require.NoError(t, c.set(context.Background(), "a", testProfile("a"), 60))
 		require.NoError(t, c.set(context.Background(), "b", testProfile("b"), 60))
 
@@ -371,7 +377,7 @@ func TestLRUEviction(t *testing.T) {
 	})
 
 	t.Run("fallback evicts earliest expiry when nothing accessed", func(t *testing.T) {
-		c, _ := newTestCache(t, 2)
+		c := newTestCache(t, 2)
 		require.NoError(t, c.set(context.Background(), "short", testProfile("short"), 60))
 		require.NoError(t, c.set(context.Background(), "long", testProfile("long"), 60))
 
@@ -387,7 +393,7 @@ func TestLRUEviction(t *testing.T) {
 	})
 
 	t.Run("direct EvictIfNeeded respects cancelled context", func(t *testing.T) {
-		c, _ := newTestCache(t, 2)
+		c := newTestCache(t, 2)
 		require.NoError(t, c.set(context.Background(), "a", testProfile("a"), 60))
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -398,7 +404,7 @@ func TestLRUEviction(t *testing.T) {
 	})
 
 	t.Run("direct EvictIfNeeded on empty cache is no-op", func(t *testing.T) {
-		c, _ := newTestCache(t, 2)
+		c := newTestCache(t, 2)
 		err := c.store.EvictIfNeeded(context.Background(), 2)
 		require.NoError(t, err)
 	})
@@ -406,7 +412,7 @@ func TestLRUEviction(t *testing.T) {
 
 func TestOpStatsRatios(t *testing.T) {
 	t.Run("mixed set outcomes", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		require.NoError(t, c.set(context.Background(), "ok", testProfile("ok"), 60))
 		require.Error(t, c.set(context.Background(), "", testProfile("bad"), 60))
 		require.Error(t, c.set(context.Background(), "x", loyalty.LoyaltyProfile{}, 60))
@@ -422,7 +428,7 @@ func TestOpStatsRatios(t *testing.T) {
 
 func TestSetMany(t *testing.T) {
 	t.Run("sets all valid entries", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		err := c.setMany(context.Background(), []BatchRequest{
 			{Key: "a", Data: testProfile("a"), TTL_Seconds: 60},
 			{Key: "b", Data: testProfile("b"), TTL_Seconds: 60},
@@ -433,7 +439,7 @@ func TestSetMany(t *testing.T) {
 	})
 
 	t.Run("continues on partial failure and joins errors", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		err := c.setMany(context.Background(), []BatchRequest{
 			{Key: "a", Data: testProfile("a"), TTL_Seconds: 60},
 			{Key: "", Data: testProfile("b"), TTL_Seconds: 60},
@@ -446,7 +452,7 @@ func TestSetMany(t *testing.T) {
 	})
 
 	t.Run("cancelled context", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		err := c.setMany(ctx, []BatchRequest{{Key: "a", Data: testProfile("a"), TTL_Seconds: 60}})
@@ -457,7 +463,7 @@ func TestSetMany(t *testing.T) {
 
 func TestGetMany(t *testing.T) {
 	t.Run("returns records for requested keys", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		require.NoError(t, c.set(context.Background(), "a", testProfile("a"), 60))
 		require.NoError(t, c.set(context.Background(), "b", testProfile("b"), 60))
 
@@ -474,7 +480,7 @@ func TestGetMany(t *testing.T) {
 	})
 
 	t.Run("joins per-key errors", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		recs, err := c.getMany(context.Background(), []BatchRequest{
 			{Key: ""},
 		})
@@ -484,7 +490,7 @@ func TestGetMany(t *testing.T) {
 	})
 
 	t.Run("cancelled context", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		recs, err := c.getMany(ctx, []BatchRequest{{Key: "a"}})
@@ -496,7 +502,7 @@ func TestGetMany(t *testing.T) {
 
 func TestDeleteMany(t *testing.T) {
 	t.Run("deletes requested keys", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		require.NoError(t, c.set(context.Background(), "a", testProfile("a"), 60))
 		require.NoError(t, c.set(context.Background(), "b", testProfile("b"), 60))
 
@@ -509,7 +515,7 @@ func TestDeleteMany(t *testing.T) {
 	})
 
 	t.Run("continues on partial failure", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		require.NoError(t, c.set(context.Background(), "a", testProfile("a"), 60))
 
 		err := c.deleteMany(context.Background(), []BatchRequest{
@@ -522,7 +528,7 @@ func TestDeleteMany(t *testing.T) {
 	})
 
 	t.Run("cancelled context", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		err := c.deleteMany(ctx, []BatchRequest{{Key: "a"}})
@@ -533,7 +539,7 @@ func TestDeleteMany(t *testing.T) {
 
 func TestAutomaticCleanup(t *testing.T) {
 	t.Run("removes expired entries then stops on cancel", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		require.NoError(t, c.set(context.Background(), "live", testProfile("live"), 60))
 		require.NoError(t, c.set(context.Background(), "dead", testProfile("dead"), 60))
 
@@ -559,7 +565,7 @@ func TestAutomaticCleanup(t *testing.T) {
 	})
 
 	t.Run("cancelled context before start", func(t *testing.T) {
-		c, _ := newTestCache(t, 10)
+		c := newTestCache(t, 10)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		err := c.automaticCleanup(ctx, 1)
@@ -569,34 +575,13 @@ func TestAutomaticCleanup(t *testing.T) {
 	})
 }
 
-func TestRun(t *testing.T) {
-	c, logger := newTestCache(t, 10)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	done := make(chan error, 1)
-	go func() {
-		done <- Run(ctx, c)
-	}()
-
-	select {
-	case err := <-done:
-		require.NoError(t, err)
-	case <-time.After(3 * time.Second):
-		t.Fatal("Run did not finish")
-	}
-
-	assert.Equal(t, 0, c.entryCount(t))
-	assert.NotEmpty(t, logger.infos)
-}
-
 func TestCacheInterfaceSatisfaction(t *testing.T) {
-	c, _ := newTestCache(t, 10)
+	c := newTestCache(t, 10)
 	var _ Cache = c
 }
 
 func TestConcurrentAccess(t *testing.T) {
-	c, _ := newTestCache(t, 50)
+	c := newTestCache(t, 50)
 	var wg sync.WaitGroup
 	errCh := make(chan error, 200)
 
@@ -632,7 +617,7 @@ func TestConcurrentAccess(t *testing.T) {
 }
 
 func TestConcurrentAccessRaceDetector(t *testing.T) {
-	c, _ := newTestCache(t, 20)
+	c := newTestCache(t, 20)
 	ctx := context.Background()
 	var wg sync.WaitGroup
 	errCh := make(chan error, 500)

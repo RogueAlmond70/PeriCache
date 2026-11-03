@@ -1,8 +1,8 @@
 package main
 
 import (
-	"Nandos-Pair-Coding/cache"
-	"Nandos-Pair-Coding/metrics"
+	"PeriCache/cache"
+	"PeriCache/metrics"
 	"context"
 	"errors"
 	"flag"
@@ -14,14 +14,9 @@ import (
 )
 
 func main() {
-	mode := flag.String("mode", envOr("CACHE_MODE", "server"), "operation mode: server | demo")
 	addr := flag.String("addr", envOr("CACHE_ADDR", ":8080"), "HTTP listen address")
 	maxSize := flag.Int("max-size", 100, "maximum cache entries")
 	cleanupSeconds := flag.Int("cleanup-interval", 30, "expired-entry cleanup interval in seconds")
-	metricsBackend := flag.String("metrics", envOr("METRICS_BACKEND", "both"), "metrics backend: memory | prometheus | both")
-	storeBackend := flag.String("store", envOr("CACHE_STORE", "memory"), "store backend: memory | mongo")
-	mongoURI := flag.String("mongo-uri", envOr("MONGO_URI", "mongodb://localhost:27017"), "MongoDB connection URI")
-	mongoDB := flag.String("mongo-db", envOr("MONGO_DB", "nandos_cache"), "MongoDB database name")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -29,17 +24,8 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	rec, err := metrics.NewFromBackend(*metricsBackend, nil)
-	if err != nil {
-		logger.Error("failed to create metrics recorder", "error", err)
-		os.Exit(1)
-	}
-
-	store, err := cache.NewStore(ctx, *storeBackend, *mongoURI, *mongoDB)
-	if err != nil {
-		logger.Error("failed to create store", "error", err)
-		os.Exit(1)
-	}
+	rec := metrics.NewMemoryRecorder()
+	store := cache.NewMemoryStore()
 	defer func() {
 		if err := store.Close(context.Background()); err != nil {
 			logger.Error("failed to close store", "error", err)
@@ -52,34 +38,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	logger.Info("cache configured", "store", *storeBackend, "metrics", *metricsBackend)
+	if err := seedCache(ctx, c); err != nil {
+		logger.Error("failed to seed cache", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("cache seeded", "entries", len(seedEntries), "ttl_seconds", seedTTLSeconds)
 
-	switch *mode {
-	case "demo":
-		if err := cache.Run(ctx, c); err != nil {
-			logger.Error("demo failed", "error", err)
-			os.Exit(1)
-		}
-	case "server":
-		if err := runServer(ctx, logger, c, rec, *addr, *cleanupSeconds); err != nil {
-			logger.Error("server stopped with error", "error", err)
-			os.Exit(1)
-		}
-	default:
-		logger.Error("unknown mode", "mode", *mode)
+	if err := runServer(ctx, logger, c, *addr, *cleanupSeconds); err != nil {
+		logger.Error("server stopped with error", "error", err)
 		os.Exit(1)
 	}
 }
 
-func runServer(ctx context.Context, logger *slog.Logger, c cache.Cache, rec metrics.Recorder, addr string, cleanupSeconds int) error {
+func runServer(ctx context.Context, logger *slog.Logger, c cache.Cache, addr string, cleanupSeconds int) error {
 	cleanupDone := c.StartCleanup(ctx, cleanupSeconds)
 
 	mux := http.NewServeMux()
 	cache.RegisterRoutes(mux, c)
-	if h := metrics.HTTPHandler(rec); h != nil {
-		mux.Handle("GET /metrics", h)
-		logger.Info("prometheus metrics enabled", "path", "/metrics")
-	}
 
 	server := &http.Server{
 		Addr:              addr,

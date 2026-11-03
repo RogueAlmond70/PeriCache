@@ -1,7 +1,5 @@
 package metrics
 
-import "net/http"
-
 // Operation identifies a cache API operation for metrics.
 type Operation string
 
@@ -39,7 +37,7 @@ type Snapshotter interface {
 	Snapshot() Snapshot
 }
 
-// Snapshot is a point-in-time view of in-process counters (memory backend).
+// Snapshot is a point-in-time view of in-process counters.
 type Snapshot struct {
 	Hit       int            `json:"hit"`
 	Miss      int            `json:"miss"`
@@ -63,7 +61,10 @@ type OperationStats struct {
 	FailureRatio float64 `json:"failure_ratio"`
 }
 
-// Handler returns an HTTP handler for Prometheus exposition, or nil if unsupported.
-type HandlerProvider interface {
-	Handler() http.Handler
+// SnapshotOf returns a snapshot when the recorder implements Snapshotter.
+func SnapshotOf(r Recorder) (Snapshot, bool) {
+	if s, ok := r.(Snapshotter); ok {
+		return s.Snapshot(), true
+	}
+	return Snapshot{}, false
 }

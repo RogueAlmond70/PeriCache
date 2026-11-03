@@ -1,9 +1,9 @@
 package cache
 
 import (
-	"Nandos-Pair-Coding/internal"
-	"Nandos-Pair-Coding/loyalty"
-	"Nandos-Pair-Coding/metrics"
+	"PeriCache/internal"
+	"PeriCache/loyalty"
+	"PeriCache/metrics"
 	"context"
 	"errors"
 	"fmt"
@@ -45,131 +45,6 @@ type BatchRequest struct {
 	Key         string                 `json:"key"`
 	Data        loyalty.LoyaltyProfile `json:"data"`
 	TTL_Seconds int                    `json:"ttl_seconds"`
-}
-
-// Run demonstrates the cache against the assessment brief and starts periodic
-// expired-entry cleanup. Cancel ctx to stop cleanup and return.
-func Run(ctx context.Context, c Cache) error {
-	cleanupCtx, cancelCleanup := context.WithCancel(ctx)
-	cleanupDone := c.StartCleanup(cleanupCtx, defaultCleanupIntervalSeconds)
-	defer func() {
-		cancelCleanup()
-		<-cleanupDone
-	}()
-
-	logger := cacheLogger(c)
-	logger.Info("cache demo starting")
-
-	profiles := []loyalty.LoyaltyProfile{
-		sampleProfile("cust-001", "Alex", "Flame", "alex@example.com", "Hot"),
-		sampleProfile("cust-002", "Sam", "Extra", "sam@example.com", "Extra Hot"),
-		sampleProfile("cust-003", "Jordan", "Lemon", "jordan@example.com", "Lemon & Herb"),
-	}
-
-	if err := c.Set(ctx, profiles[0].CustomerID, profiles[0], 60); err != nil {
-		logger.Error("demo set failed", "key", profiles[0].CustomerID, "error", err)
-		return fmt.Errorf("demo set: %w", err)
-	}
-	if err := c.Set(ctx, profiles[1].CustomerID, profiles[1], 60); err != nil {
-		logger.Error("demo set failed", "key", profiles[1].CustomerID, "error", err)
-		return fmt.Errorf("demo set: %w", err)
-	}
-	if err := c.SetMany(ctx, []BatchRequest{
-		{Key: profiles[2].CustomerID, Data: profiles[2], TTL_Seconds: 60},
-	}); err != nil {
-		logger.Error("demo set many failed", "error", err)
-		return fmt.Errorf("demo set many: %w", err)
-	}
-
-	profile, err := c.Get(ctx, profiles[0].CustomerID)
-	if err != nil {
-		logger.Error("demo get failed", "key", profiles[0].CustomerID, "error", err)
-		return fmt.Errorf("demo get: %w", err)
-	}
-	logger.Info("demo get", "customer_id", profile.CustomerID, "tier", profile.Loyalty.Tier)
-
-	keys, err := c.Keys(ctx)
-	if err != nil {
-		logger.Error("demo keys failed", "error", err)
-		return fmt.Errorf("demo keys: %w", err)
-	}
-	logger.Info("demo keys", "keys", keys)
-
-	n, err := c.Size(ctx)
-	if err != nil {
-		logger.Error("demo size failed", "error", err)
-		return fmt.Errorf("demo size: %w", err)
-	}
-	logger.Info("demo size", "size", n)
-
-	if _, err := c.GetMany(ctx, []BatchRequest{
-		{Key: profiles[0].CustomerID},
-		{Key: profiles[1].CustomerID},
-	}); err != nil {
-		logger.Error("demo get many failed", "error", err)
-		return fmt.Errorf("demo get many: %w", err)
-	}
-	if err := c.DeleteMany(ctx, []BatchRequest{{Key: profiles[2].CustomerID}}); err != nil {
-		logger.Error("demo delete many failed", "error", err)
-		return fmt.Errorf("demo delete many: %w", err)
-	}
-	if err := c.Delete(ctx, profiles[1].CustomerID); err != nil {
-		logger.Error("demo delete failed", "key", profiles[1].CustomerID, "error", err)
-		return fmt.Errorf("demo delete: %w", err)
-	}
-
-	stats := c.Stats()
-	logger.Info("demo statistics",
-		"hit", stats.Hit,
-		"miss", stats.Miss,
-		"hit_ratio", stats.HitRatio,
-		"miss_ratio", stats.MissRatio,
-		"set_success_ratio", stats.Set.SuccessRatio,
-		"set_failure_ratio", stats.Set.FailureRatio,
-		"get_success_ratio", stats.Get.SuccessRatio,
-		"get_failure_ratio", stats.Get.FailureRatio,
-	)
-
-	if err := c.Clear(ctx); err != nil {
-		logger.Error("demo clear failed", "error", err)
-		return fmt.Errorf("demo clear: %w", err)
-	}
-	logger.Info("cache demo complete")
-	return nil
-}
-
-func cacheLogger(c Cache) internal.Logger {
-	if impl, ok := c.(*ourCache); ok {
-		return impl.logger
-	}
-	return noopLogger{}
-}
-
-type noopLogger struct{}
-
-func (noopLogger) Info(string, ...any)  {}
-func (noopLogger) Error(string, ...any) {}
-func (noopLogger) Warn(string, ...any)  {}
-
-func sampleProfile(id, first, last, email, tier string) loyalty.LoyaltyProfile {
-	now := time.Now().UTC()
-	return loyalty.LoyaltyProfile{
-		CustomerID:    id,
-		FirstName:     first,
-		LastName:      last,
-		Email:         email,
-		AccountStatus: "active",
-		CreatedAt:     now,
-		LastActivity:  now,
-		Loyalty: loyalty.Loyalty{
-			Tier:           tier,
-			PointsBalance:  100,
-			LifetimePoints: 250,
-			RewardsAvailable: []loyalty.Reward{
-				{RewardID: "r1", Name: "Free PERi-PERi Chips", PointsRequired: 50},
-			},
-		},
-	}
 }
 
 type record struct {
@@ -258,10 +133,6 @@ func (c *ourCache) StartCleanup(ctx context.Context, cleanupIntervalSeconds int)
 	return done
 }
 
-func (c *ourCache) Metrics() metrics.Recorder {
-	return c.metrics
-}
-
 // NewCache creates a cache. nil store defaults to memory; nil rec defaults to memory metrics.
 func NewCache(ctx context.Context, logger internal.Logger, maxSize int, rec metrics.Recorder, store Store) (*ourCache, error) {
 	if err := ctx.Err(); err != nil {
@@ -275,7 +146,7 @@ func NewCache(ctx context.Context, logger internal.Logger, maxSize int, rec metr
 		rec = metrics.NewMemoryRecorder()
 	}
 	if store == nil {
-		store = newMemoryStore()
+		store = NewMemoryStore()
 	}
 	logger.Info("New Cache created")
 	return &ourCache{
@@ -551,6 +422,9 @@ func (c *ourCache) deleteMany(ctx context.Context, batch []BatchRequest) error {
 
 // memoryStoreOrNil returns the underlying memory store when used (tests).
 func (c *ourCache) memoryStoreOrNil() *memoryStore {
-	ms, _ := c.store.(*memoryStore)
+	ms, ok := c.store.(*memoryStore)
+	if !ok {
+		return nil
+	}
 	return ms
 }
