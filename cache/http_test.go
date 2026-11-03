@@ -123,7 +123,8 @@ func TestHTTPMetricsEndpoint(t *testing.T) {
 	defer srv.Close()
 
 	require.NoError(t, c.Set(t.Context(), "a", testProfile("a"), 60))
-	_, _ = c.Get(t.Context(), "a")
+	_, err = c.Get(t.Context(), "a")
+	require.NoError(t, err)
 
 	resp, err := http.Get(srv.URL + "/metrics")
 	require.NoError(t, err)

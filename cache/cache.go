@@ -17,13 +17,6 @@ var (
 	ErrNotFound   = errors.New("cache entry not found")
 )
 
-// Deprecated aliases kept for existing internal call sites / tests.
-var (
-	errNoKey      = ErrNoKey
-	errNoData     = ErrNoData
-	errInvalidTTL = ErrInvalidTTL
-)
-
 const defaultCleanupIntervalSeconds = 30
 
 // Cache is the exported service API used by HTTP handlers and callers outside this package.
@@ -56,10 +49,13 @@ type BatchRequest struct {
 
 // Run demonstrates the cache against the assessment brief and starts periodic
 // expired-entry cleanup. Cancel ctx to stop cleanup and return.
-func Run(ctx context.Context, c Cache) {
+func Run(ctx context.Context, c Cache) error {
 	cleanupCtx, cancelCleanup := context.WithCancel(ctx)
-	defer cancelCleanup()
 	cleanupDone := c.StartCleanup(cleanupCtx, defaultCleanupIntervalSeconds)
+	defer func() {
+		cancelCleanup()
+		<-cleanupDone
+	}()
 
 	logger := cacheLogger(c)
 	logger.Info("cache demo starting")
@@ -70,29 +66,57 @@ func Run(ctx context.Context, c Cache) {
 		sampleProfile("cust-003", "Jordan", "Lemon", "jordan@example.com", "Lemon & Herb"),
 	}
 
-	_ = c.Set(ctx, profiles[0].CustomerID, profiles[0], 60)
-	_ = c.Set(ctx, profiles[1].CustomerID, profiles[1], 60)
-	_ = c.SetMany(ctx, []BatchRequest{
+	if err := c.Set(ctx, profiles[0].CustomerID, profiles[0], 60); err != nil {
+		logger.Error("demo set failed", "key", profiles[0].CustomerID, "error", err)
+		return fmt.Errorf("demo set: %w", err)
+	}
+	if err := c.Set(ctx, profiles[1].CustomerID, profiles[1], 60); err != nil {
+		logger.Error("demo set failed", "key", profiles[1].CustomerID, "error", err)
+		return fmt.Errorf("demo set: %w", err)
+	}
+	if err := c.SetMany(ctx, []BatchRequest{
 		{Key: profiles[2].CustomerID, Data: profiles[2], TTL_Seconds: 60},
-	})
-
-	if profile, err := c.Get(ctx, profiles[0].CustomerID); err == nil {
-		logger.Info("demo get", "customer_id", profile.CustomerID, "tier", profile.Loyalty.Tier)
+	}); err != nil {
+		logger.Error("demo set many failed", "error", err)
+		return fmt.Errorf("demo set many: %w", err)
 	}
 
-	if keys, err := c.Keys(ctx); err == nil {
-		logger.Info("demo keys", "keys", keys)
+	profile, err := c.Get(ctx, profiles[0].CustomerID)
+	if err != nil {
+		logger.Error("demo get failed", "key", profiles[0].CustomerID, "error", err)
+		return fmt.Errorf("demo get: %w", err)
 	}
-	if n, err := c.Size(ctx); err == nil {
-		logger.Info("demo size", "size", n)
-	}
+	logger.Info("demo get", "customer_id", profile.CustomerID, "tier", profile.Loyalty.Tier)
 
-	_, _ = c.GetMany(ctx, []BatchRequest{
+	keys, err := c.Keys(ctx)
+	if err != nil {
+		logger.Error("demo keys failed", "error", err)
+		return fmt.Errorf("demo keys: %w", err)
+	}
+	logger.Info("demo keys", "keys", keys)
+
+	n, err := c.Size(ctx)
+	if err != nil {
+		logger.Error("demo size failed", "error", err)
+		return fmt.Errorf("demo size: %w", err)
+	}
+	logger.Info("demo size", "size", n)
+
+	if _, err := c.GetMany(ctx, []BatchRequest{
 		{Key: profiles[0].CustomerID},
 		{Key: profiles[1].CustomerID},
-	})
-	_ = c.DeleteMany(ctx, []BatchRequest{{Key: profiles[2].CustomerID}})
-	_ = c.Delete(ctx, profiles[1].CustomerID)
+	}); err != nil {
+		logger.Error("demo get many failed", "error", err)
+		return fmt.Errorf("demo get many: %w", err)
+	}
+	if err := c.DeleteMany(ctx, []BatchRequest{{Key: profiles[2].CustomerID}}); err != nil {
+		logger.Error("demo delete many failed", "error", err)
+		return fmt.Errorf("demo delete many: %w", err)
+	}
+	if err := c.Delete(ctx, profiles[1].CustomerID); err != nil {
+		logger.Error("demo delete failed", "key", profiles[1].CustomerID, "error", err)
+		return fmt.Errorf("demo delete: %w", err)
+	}
 
 	stats := c.Stats()
 	logger.Info("demo statistics",
@@ -106,11 +130,12 @@ func Run(ctx context.Context, c Cache) {
 		"get_failure_ratio", stats.Get.FailureRatio,
 	)
 
-	_ = c.Clear(ctx)
+	if err := c.Clear(ctx); err != nil {
+		logger.Error("demo clear failed", "error", err)
+		return fmt.Errorf("demo clear: %w", err)
+	}
 	logger.Info("cache demo complete")
-
-	cancelCleanup()
-	<-cleanupDone
+	return nil
 }
 
 func cacheLogger(c Cache) internal.Logger {
@@ -226,7 +251,9 @@ func (c *ourCache) StartCleanup(ctx context.Context, cleanupIntervalSeconds int)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = c.automaticCleanup(ctx, cleanupIntervalSeconds)
+		if err := c.automaticCleanup(ctx, cleanupIntervalSeconds); err != nil {
+			c.logger.Error("automatic cleanup stopped with error", "error", err)
+		}
 	}()
 	return done
 }
@@ -286,18 +313,18 @@ func (c *ourCache) set(ctx context.Context, key string, data loyalty.LoyaltyProf
 	}
 	if key == "" {
 		c.recordFailure(metrics.OpSet)
-		c.logger.Error("failed to set cache", "key", key, "error", errNoKey)
-		return fmt.Errorf("failed to set cache: %w", errNoKey)
+		c.logger.Error("failed to set cache", "key", key, "error", ErrNoKey)
+		return fmt.Errorf("failed to set cache: %w", ErrNoKey)
 	}
 	if data.CustomerID == "" {
 		c.recordFailure(metrics.OpSet)
-		c.logger.Error("failed to set cache", "key", key, "error", errNoData)
-		return fmt.Errorf("failed to set cache %w", errNoData)
+		c.logger.Error("failed to set cache", "key", key, "error", ErrNoData)
+		return fmt.Errorf("failed to set cache %w", ErrNoData)
 	}
 	if ttlSeconds < 1 {
 		c.recordFailure(metrics.OpSet)
-		c.logger.Error("failed to set cache", "key", key, "error", errInvalidTTL)
-		return fmt.Errorf("failed to set cache %w", errInvalidTTL)
+		c.logger.Error("failed to set cache", "key", key, "error", ErrInvalidTTL)
+		return fmt.Errorf("failed to set cache %w", ErrInvalidTTL)
 	}
 
 	rec := record{
@@ -331,8 +358,8 @@ func (c *ourCache) get(ctx context.Context, key string) (record, error) {
 	}
 	if key == "" {
 		c.recordFailure(metrics.OpGet)
-		c.logger.Error("failed to complete get request", "error", errNoKey)
-		return record{}, fmt.Errorf("failed to complete get request %w", errNoKey)
+		c.logger.Error("failed to complete get request", "error", ErrNoKey)
+		return record{}, fmt.Errorf("failed to complete get request %w", ErrNoKey)
 	}
 
 	value, ok, err := c.store.Get(ctx, key)
@@ -372,8 +399,8 @@ func (c *ourCache) delete(ctx context.Context, key string) error {
 	}
 	if key == "" {
 		c.recordFailure(metrics.OpDelete)
-		c.logger.Error("failed to complete delete operation", "error", errNoKey)
-		return fmt.Errorf("failed to complete delete operation %w", errNoKey)
+		c.logger.Error("failed to complete delete operation", "error", ErrNoKey)
+		return fmt.Errorf("failed to complete delete operation %w", ErrNoKey)
 	}
 
 	if err := c.store.Delete(ctx, key); err != nil {

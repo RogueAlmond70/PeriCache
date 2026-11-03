@@ -41,7 +41,9 @@ func main() {
 		os.Exit(1)
 	}
 	defer func() {
-		_ = store.Close(context.Background())
+		if err := store.Close(context.Background()); err != nil {
+			logger.Error("failed to close store", "error", err)
+		}
 	}()
 
 	c, err := cache.NewCache(ctx, logger, *maxSize, rec, store)
@@ -54,7 +56,10 @@ func main() {
 
 	switch *mode {
 	case "demo":
-		cache.Run(ctx, c)
+		if err := cache.Run(ctx, c); err != nil {
+			logger.Error("demo failed", "error", err)
+			os.Exit(1)
+		}
 	case "server":
 		if err := runServer(ctx, logger, c, rec, *addr, *cleanupSeconds); err != nil {
 			logger.Error("server stopped with error", "error", err)
@@ -98,7 +103,11 @@ func runServer(ctx context.Context, logger *slog.Logger, c cache.Cache, rec metr
 		logger.Info("shutting down HTTP server")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = server.Shutdown(shutdownCtx)
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			logger.Error("HTTP server shutdown failed", "error", err)
+			<-cleanupDone
+			return err
+		}
 		<-cleanupDone
 		return <-errCh
 	case err := <-errCh:

@@ -118,7 +118,7 @@ func TestSet(t *testing.T) {
 		c, _ := newTestCache(t, 10)
 		err := c.set(context.Background(), "", testProfile("cust-1"), 60)
 		require.Error(t, err)
-		assert.ErrorIs(t, err, errNoKey)
+		assert.ErrorIs(t, err, ErrNoKey)
 		assert.Equal(t, 1, c.Stats().Set.Failure)
 		assert.InDelta(t, 1.0, c.Stats().Set.FailureRatio, 0.001)
 	})
@@ -127,7 +127,7 @@ func TestSet(t *testing.T) {
 		c, _ := newTestCache(t, 10)
 		err := c.set(context.Background(), "k1", loyalty.LoyaltyProfile{}, 60)
 		require.Error(t, err)
-		assert.ErrorIs(t, err, errNoData)
+		assert.ErrorIs(t, err, ErrNoData)
 		assert.Equal(t, 1, c.Stats().Set.Failure)
 	})
 
@@ -135,11 +135,11 @@ func TestSet(t *testing.T) {
 		c, _ := newTestCache(t, 10)
 		err := c.set(context.Background(), "k1", testProfile("cust-1"), 0)
 		require.Error(t, err)
-		assert.ErrorIs(t, err, errInvalidTTL)
+		assert.ErrorIs(t, err, ErrInvalidTTL)
 
 		err = c.set(context.Background(), "k1", testProfile("cust-1"), -1)
 		require.Error(t, err)
-		assert.ErrorIs(t, err, errInvalidTTL)
+		assert.ErrorIs(t, err, ErrInvalidTTL)
 		assert.Equal(t, 2, c.Stats().Set.Failure)
 	})
 
@@ -199,7 +199,7 @@ func TestGet(t *testing.T) {
 		c, _ := newTestCache(t, 10)
 		_, err := c.get(context.Background(), "")
 		require.Error(t, err)
-		assert.ErrorIs(t, err, errNoKey)
+		assert.ErrorIs(t, err, ErrNoKey)
 		assert.Equal(t, 1, c.Stats().Get.Failure)
 		assert.InDelta(t, 1.0, c.Stats().Get.FailureRatio, 0.001)
 	})
@@ -235,7 +235,7 @@ func TestDelete(t *testing.T) {
 		c, _ := newTestCache(t, 10)
 		err := c.delete(context.Background(), "")
 		require.Error(t, err)
-		assert.ErrorIs(t, err, errNoKey)
+		assert.ErrorIs(t, err, ErrNoKey)
 		assert.Equal(t, 1, c.Stats().Delete.Failure)
 	})
 
@@ -440,7 +440,7 @@ func TestSetMany(t *testing.T) {
 			{Key: "c", Data: testProfile("c"), TTL_Seconds: 60},
 		})
 		require.Error(t, err)
-		assert.ErrorIs(t, err, errNoKey)
+		assert.ErrorIs(t, err, ErrNoKey)
 		assert.True(t, c.hasKey(t, "a"))
 		assert.True(t, c.hasKey(t, "c"))
 	})
@@ -479,7 +479,7 @@ func TestGetMany(t *testing.T) {
 			{Key: ""},
 		})
 		require.Error(t, err)
-		assert.ErrorIs(t, err, errNoKey)
+		assert.ErrorIs(t, err, ErrNoKey)
 		require.Len(t, recs, 1)
 	})
 
@@ -517,7 +517,7 @@ func TestDeleteMany(t *testing.T) {
 			{Key: ""},
 		})
 		require.Error(t, err)
-		assert.ErrorIs(t, err, errNoKey)
+		assert.ErrorIs(t, err, ErrNoKey)
 		assert.False(t, c.hasKey(t, "a"))
 	})
 
@@ -574,14 +574,14 @@ func TestRun(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	done := make(chan struct{})
+	done := make(chan error, 1)
 	go func() {
-		Run(ctx, c)
-		close(done)
+		done <- Run(ctx, c)
 	}()
 
 	select {
-	case <-done:
+	case err := <-done:
+		require.NoError(t, err)
 	case <-time.After(3 * time.Second):
 		t.Fatal("Run did not finish")
 	}
@@ -635,18 +635,36 @@ func TestConcurrentAccessRaceDetector(t *testing.T) {
 	c, _ := newTestCache(t, 20)
 	ctx := context.Background()
 	var wg sync.WaitGroup
+	errCh := make(chan error, 500)
 
 	for i := 0; i < 100; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			key := string(rune('a' + (i % 20)))
-			_ = c.set(ctx, key, testProfile(key), 60)
-			_, _ = c.get(ctx, key)
-			_ = c.delete(ctx, key)
-			_, _ = c.size(ctx)
-			_ = c.clear(ctx)
+			if err := c.set(ctx, key, testProfile(key), 60); err != nil {
+				errCh <- err
+			}
+			if _, err := c.get(ctx, key); err != nil && !errors.Is(err, ErrNotFound) {
+				errCh <- err
+			}
+			if err := c.delete(ctx, key); err != nil {
+				errCh <- err
+			}
+			if _, err := c.size(ctx); err != nil {
+				errCh <- err
+			}
+			if err := c.clear(ctx); err != nil {
+				errCh <- err
+			}
 		}(i)
 	}
 	wg.Wait()
+	close(errCh)
+
+	var errs []error
+	for err := range errCh {
+		errs = append(errs, err)
+	}
+	assert.Empty(t, errs, "unexpected concurrent errors: %v", errors.Join(errs...))
 }

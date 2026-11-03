@@ -31,14 +31,18 @@ func newMongoStore(ctx context.Context, uri, database, collection string) (*mong
 		return nil, fmt.Errorf("connect mongo: %w", err)
 	}
 	if err := client.Ping(ctx, nil); err != nil {
-		_ = client.Disconnect(ctx)
+		if closeErr := client.Disconnect(ctx); closeErr != nil {
+			return nil, fmt.Errorf("ping mongo: %w (also failed to disconnect: %v)", err, closeErr)
+		}
 		return nil, fmt.Errorf("ping mongo: %w", err)
 	}
 
 	coll := client.Database(database).Collection(collection)
 	store := &mongoStore{client: client, collection: coll}
 	if err := store.ensureIndexes(ctx); err != nil {
-		_ = client.Disconnect(ctx)
+		if closeErr := client.Disconnect(ctx); closeErr != nil {
+			return nil, fmt.Errorf("%w (also failed to disconnect: %v)", err, closeErr)
+		}
 		return nil, err
 	}
 	return store, nil
@@ -88,7 +92,9 @@ func (m *mongoStore) Get(ctx context.Context, key string) (record, bool, error) 
 		return record{}, false, fmt.Errorf("mongo get: %w", err)
 	}
 	if time.Now().After(doc.Expiry) {
-		_, _ = m.collection.DeleteOne(ctx, bson.M{"_id": key})
+		if _, err := m.collection.DeleteOne(ctx, bson.M{"_id": key}); err != nil {
+			return record{}, false, fmt.Errorf("mongo delete expired: %w", err)
+		}
 		return record{}, false, nil
 	}
 	return record{
