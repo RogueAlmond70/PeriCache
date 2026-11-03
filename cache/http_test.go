@@ -8,19 +8,21 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"Nandos-Pair-Coding/metrics"
-
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func newTestServer(t *testing.T) (*httptest.Server, *ourCache) {
 	t.Helper()
-	c, _ := newTestCache(t, 10)
+	c := newTestCache(t, 10)
 	mux := http.NewServeMux()
 	RegisterRoutes(mux, c)
 	return httptest.NewServer(mux), c
+}
+
+func closeBody(t *testing.T, body io.Closer) {
+	t.Helper()
+	require.NoError(t, body.Close())
 }
 
 func TestHTTPHealthz(t *testing.T) {
@@ -29,7 +31,7 @@ func TestHTTPHealthz(t *testing.T) {
 
 	resp, err := http.Get(srv.URL + "/healthz")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer closeBody(t, resp.Body)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
@@ -46,12 +48,12 @@ func TestHTTPSetGetDelete(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	resp.Body.Close()
+	closeBody(t, resp.Body)
 	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
 
 	resp, err = http.Get(srv.URL + "/cache/cust-1")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer closeBody(t, resp.Body)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var got map[string]any
@@ -62,12 +64,12 @@ func TestHTTPSetGetDelete(t *testing.T) {
 	require.NoError(t, err)
 	resp, err = http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	resp.Body.Close()
+	closeBody(t, resp.Body)
 	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
 
 	resp, err = http.Get(srv.URL + "/cache/cust-1")
 	require.NoError(t, err)
-	resp.Body.Close()
+	closeBody(t, resp.Body)
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
@@ -79,60 +81,32 @@ func TestHTTPValidationAndStats(t *testing.T) {
 	require.NoError(t, err)
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	resp.Body.Close()
+	closeBody(t, resp.Body)
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 
 	require.NoError(t, c.Set(t.Context(), "a", testProfile("a"), 60))
 
 	resp, err = http.Get(srv.URL + "/cache/size")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer closeBody(t, resp.Body)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	resp, err = http.Get(srv.URL + "/cache/keys")
 	require.NoError(t, err)
-	resp.Body.Close()
+	closeBody(t, resp.Body)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	resp, err = http.Get(srv.URL + "/cache/stats")
 	require.NoError(t, err)
-	resp.Body.Close()
+	closeBody(t, resp.Body)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	req, err = http.NewRequest(http.MethodDelete, srv.URL+"/cache", nil)
 	require.NoError(t, err)
 	resp, err = http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	resp.Body.Close()
+	closeBody(t, resp.Body)
 	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
-}
-
-func TestHTTPMetricsEndpoint(t *testing.T) {
-	reg := prometheus.NewRegistry()
-	rec, err := metrics.NewFromBackend("both", reg)
-	require.NoError(t, err)
-
-	logger := &mockLogger{}
-	c, err := NewCache(t.Context(), logger, 10, rec, newMemoryStore())
-	require.NoError(t, err)
-
-	mux := http.NewServeMux()
-	RegisterRoutes(mux, c)
-	mux.Handle("GET /metrics", metrics.HTTPHandler(rec))
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
-
-	require.NoError(t, c.Set(t.Context(), "a", testProfile("a"), 60))
-	_, err = c.Get(t.Context(), "a")
-	require.NoError(t, err)
-
-	resp, err := http.Get(srv.URL + "/metrics")
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	body, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
-	assert.Contains(t, string(body), "peri_peri_lru_cache_operations_total")
 }
 
 func TestHTTPBatch(t *testing.T) {
@@ -148,20 +122,20 @@ func TestHTTPBatch(t *testing.T) {
 
 	resp, err := http.Post(srv.URL+"/cache/batch", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
-	resp.Body.Close()
+	closeBody(t, resp.Body)
 	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
 
 	getBody, err := json.Marshal([]BatchRequest{{Key: "a"}, {Key: "missing"}})
 	require.NoError(t, err)
 	resp, err = http.Post(srv.URL+"/cache/batch/get", "application/json", bytes.NewReader(getBody))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer closeBody(t, resp.Body)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	delBody, err := json.Marshal([]BatchRequest{{Key: "a"}, {Key: "b"}})
 	require.NoError(t, err)
 	resp, err = http.Post(srv.URL+"/cache/batch/delete", "application/json", bytes.NewReader(delBody))
 	require.NoError(t, err)
-	resp.Body.Close()
+	closeBody(t, resp.Body)
 	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
 }

@@ -1,9 +1,10 @@
 package cache
 
 import (
-	"Nandos-Pair-Coding/loyalty"
+	"PeriCache/loyalty"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 )
@@ -217,6 +218,6 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(payload); err != nil {
 		// Status already written; nothing useful left to send to the client.
-		return
+		slog.Error("failed to encode JSON response", "error", err)
 	}
 }
