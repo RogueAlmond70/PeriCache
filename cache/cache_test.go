@@ -112,7 +112,7 @@ func TestSet(t *testing.T) {
 		assert.Equal(t, profile.CustomerID, rec.data.CustomerID)
 		assert.Equal(t, 60, rec.ttl)
 		assert.True(t, rec.expiry.After(time.Now()))
-		assert.True(t, rec.lastAccessed.IsZero())
+		assert.False(t, rec.lastAccessed.IsZero())
 		assert.Equal(t, 1, c.Stats().Set.Attempted)
 		assert.Equal(t, 1, c.Stats().Set.Success)
 		assert.Equal(t, 0, c.Stats().Set.Failure)
@@ -353,6 +353,7 @@ func TestRemoveExpiredEntries(t *testing.T) {
 		err := c.removeExpiredEntries(ctx)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, context.Canceled)
+		assert.Equal(t, 1, c.Stats().Cleanup.Failure)
 	})
 }
 
@@ -376,18 +377,68 @@ func TestLRUEviction(t *testing.T) {
 		assert.Equal(t, 2, c.entryCount(t))
 	})
 
-	t.Run("fallback evicts earliest expiry when nothing accessed", func(t *testing.T) {
+	t.Run("fallback uses earliest expiry when lastAccessed equal", func(t *testing.T) {
 		c := newTestCache(t, 2)
 		require.NoError(t, c.set(context.Background(), "short", testProfile("short"), 60))
 		require.NoError(t, c.set(context.Background(), "long", testProfile("long"), 60))
 
-		c.expireKey(t, "short", time.Now().Add(5 * time.Second))
-		c.expireKey(t, "long", time.Now().Add(30 * time.Second))
+		accessed := time.Now().Add(-time.Minute)
+		short, ok := c.getRaw(t, "short")
+		require.True(t, ok)
+		short.lastAccessed = accessed
+		short.expiry = time.Now().Add(5 * time.Second)
+		c.putRaw(t, "short", short)
+
+		long, ok := c.getRaw(t, "long")
+		require.True(t, ok)
+		long.lastAccessed = accessed
+		long.expiry = time.Now().Add(30 * time.Second)
+		c.putRaw(t, "long", long)
 
 		require.NoError(t, c.set(context.Background(), "new", testProfile("new"), 60))
 
 		assert.False(t, c.hasKey(t, "short"))
 		assert.True(t, c.hasKey(t, "long"))
+		assert.True(t, c.hasKey(t, "new"))
+		assert.Equal(t, 2, c.entryCount(t))
+	})
+
+	t.Run("does not evict recently got key in favour of colder sibling", func(t *testing.T) {
+		c := newTestCache(t, 2)
+		require.NoError(t, c.set(context.Background(), "a", testProfile("a"), 60))
+		require.NoError(t, c.set(context.Background(), "b", testProfile("b"), 60))
+
+		now := time.Now()
+		a, ok := c.getRaw(t, "a")
+		require.True(t, ok)
+		a.lastAccessed = now.Add(-time.Second)
+		c.putRaw(t, "a", a)
+
+		b, ok := c.getRaw(t, "b")
+		require.True(t, ok)
+		b.lastAccessed = now.Add(-time.Minute)
+		c.putRaw(t, "b", b)
+
+		require.NoError(t, c.set(context.Background(), "c", testProfile("c"), 60))
+
+		assert.True(t, c.hasKey(t, "a"))
+		assert.False(t, c.hasKey(t, "b"))
+		assert.True(t, c.hasKey(t, "c"))
+		assert.Equal(t, 2, c.entryCount(t))
+	})
+
+	t.Run("clears expired before evicting live entries", func(t *testing.T) {
+		c := newTestCache(t, 2)
+		require.NoError(t, c.set(context.Background(), "dead", testProfile("dead"), 60))
+		require.NoError(t, c.set(context.Background(), "live", testProfile("live"), 60))
+		_, err := c.get(context.Background(), "live")
+		require.NoError(t, err)
+
+		c.expireKey(t, "dead", time.Now().Add(-time.Second))
+		require.NoError(t, c.set(context.Background(), "new", testProfile("new"), 60))
+
+		assert.False(t, c.hasKey(t, "dead"))
+		assert.True(t, c.hasKey(t, "live"))
 		assert.True(t, c.hasKey(t, "new"))
 		assert.Equal(t, 2, c.entryCount(t))
 	})
@@ -438,6 +489,27 @@ func TestSetMany(t *testing.T) {
 		assert.True(t, c.hasKey(t, "b"))
 	})
 
+	t.Run("defaults missing ttl to DefaultTTLSeconds", func(t *testing.T) {
+		c := newTestCache(t, 10)
+		err := c.setMany(context.Background(), []BatchRequest{
+			{Key: "a", Data: testProfile("a"), TTL_Seconds: 0},
+		})
+		require.NoError(t, err)
+		rec, ok := c.getRaw(t, "a")
+		require.True(t, ok)
+		assert.Equal(t, DefaultTTLSeconds, rec.ttl)
+	})
+
+	t.Run("rejects negative ttl", func(t *testing.T) {
+		c := newTestCache(t, 10)
+		err := c.setMany(context.Background(), []BatchRequest{
+			{Key: "a", Data: testProfile("a"), TTL_Seconds: -5},
+		})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrInvalidTTL)
+		assert.False(t, c.hasKey(t, "a"))
+	})
+
 	t.Run("continues on partial failure and joins errors", func(t *testing.T) {
 		c := newTestCache(t, 10)
 		err := c.setMany(context.Background(), []BatchRequest{
@@ -467,34 +539,38 @@ func TestGetMany(t *testing.T) {
 		require.NoError(t, c.set(context.Background(), "a", testProfile("a"), 60))
 		require.NoError(t, c.set(context.Background(), "b", testProfile("b"), 60))
 
-		recs, err := c.getMany(context.Background(), []BatchRequest{
+		items, err := c.getMany(context.Background(), []BatchRequest{
 			{Key: "a"},
 			{Key: "b"},
 			{Key: "missing"},
 		})
 		require.NoError(t, err)
-		require.Len(t, recs, 3)
-		assert.Equal(t, "a", recs[0].data.CustomerID)
-		assert.Equal(t, "b", recs[1].data.CustomerID)
-		assert.Equal(t, "", recs[2].data.CustomerID)
+		require.Len(t, items, 3)
+		assert.True(t, items[0].Found)
+		assert.Equal(t, "a", items[0].Profile.CustomerID)
+		assert.True(t, items[1].Found)
+		assert.Equal(t, "b", items[1].Profile.CustomerID)
+		assert.False(t, items[2].Found)
+		assert.Nil(t, items[2].Profile)
 	})
 
 	t.Run("joins per-key errors", func(t *testing.T) {
 		c := newTestCache(t, 10)
-		recs, err := c.getMany(context.Background(), []BatchRequest{
+		items, err := c.getMany(context.Background(), []BatchRequest{
 			{Key: ""},
 		})
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrNoKey)
-		require.Len(t, recs, 1)
+		require.Len(t, items, 1)
+		assert.False(t, items[0].Found)
 	})
 
 	t.Run("cancelled context", func(t *testing.T) {
 		c := newTestCache(t, 10)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		recs, err := c.getMany(ctx, []BatchRequest{{Key: "a"}})
-		assert.Nil(t, recs)
+		items, err := c.getMany(ctx, []BatchRequest{{Key: "a"}})
+		assert.Nil(t, items)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, context.Canceled)
 	})
@@ -578,6 +654,42 @@ func TestAutomaticCleanup(t *testing.T) {
 func TestCacheInterfaceSatisfaction(t *testing.T) {
 	c := newTestCache(t, 10)
 	var _ Cache = c
+}
+
+func TestConcurrentGetDoesNotClobberSet(t *testing.T) {
+	c := newTestCache(t, 10)
+	ctx := context.Background()
+	require.NoError(t, c.set(ctx, "k", testProfile("v1"), 60))
+
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_, _ = c.get(ctx, "k")
+		}()
+		go func() {
+			defer wg.Done()
+			_ = c.set(ctx, "k", testProfile("v-final"), 60)
+		}()
+	}
+	wg.Wait()
+
+	// Final writer may vary; the important check is a later set sticks after gets.
+	final := testProfile("settled")
+	require.NoError(t, c.set(ctx, "k", final, 60))
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = c.get(ctx, "k")
+		}()
+	}
+	wg.Wait()
+
+	got, err := c.get(ctx, "k")
+	require.NoError(t, err)
+	assert.Equal(t, "settled", got.data.CustomerID)
 }
 
 func TestConcurrentAccess(t *testing.T) {

@@ -15,6 +15,8 @@ Default store is **in-memory** (matches the brief).
 
 On startup the cache is loaded with four loyalty profiles (TTL **3600 seconds** / 1 hour). Keys match `customer_id`.
 
+Seeding uses the normal `SetMany` path, so `/cache/stats` will already show set successes before any client traffic.
+
 | Key | Name | Status | Tier | Points | Lifetime | Reward |
 |---|---|---|---|---|---|---|
 | `cust-001` | Alex Flame | active | Hot | 120 | 400 | Free PERi-PERi Chips (50 pts) |
@@ -62,7 +64,8 @@ curl http://localhost:8080/cache/size
 
 - **Lazy + periodic expiry:** expired entries are dropped on read paths (`get` / `size` / `keys`) and by a background cleanup loop.
 - **Layering:** cache package handles validation and metrics; persistence sits behind a `Store` interface with an in-memory implementation.
-- **LRU:** on overflow, evict least-recently-accessed; if nothing has been accessed yet, evict earliest expiry.
+- **LRU:** on overflow, evict least-recently-accessed (`set` and `get` both update access time). Equal access times break ties on earliest expiry. Expired entries are removed before live eviction.
+- **Batch partial failure:** `set_many` / `delete_many` continue after per-item errors; the call returns `batch partially applied: …` while successful items in that request remain applied.
 - **Misses vs errors:** a missing/expired key is not a system failure; the API surfaces `ErrNotFound` so callers (and HTTP) can distinguish 404 from 500.
 - **Stats:** hit/miss and per-operation success/failure are recorded via a `metrics.Recorder` interface; the concrete implementation is an in-memory recorder exposed through `/cache/stats`.
 
@@ -91,5 +94,9 @@ go run .
 | `DELETE` | `/cache` |
 | `GET` | `/cache/size`, `/cache/keys`, `/cache/stats` |
 | `POST` | `/cache/batch`, `/cache/batch/get`, `/cache/batch/delete` |
+
+`POST /cache/batch/get` returns `[{ "key", "found", "profile"? }, ...]`. Misses set `"found": false` and omit `profile`.
+
+Batch set items with missing/`0` `ttl_seconds` default to **60** (same as `PUT` without `?ttl=`). Negative TTLs are rejected.
 
 Flags / env: `-addr` (default `:8080`), `-max-size`, `-cleanup-interval`.
