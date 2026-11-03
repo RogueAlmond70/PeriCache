@@ -22,6 +22,22 @@ func (m *memoryStore) Put(_ context.Context, key string, rec record) error {
 	return nil
 }
 
+func (m *memoryStore) PutAndEvict(ctx context.Context, key string, rec record, maxSize int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.data[key] = rec
+	m.deleteExpiredLocked()
+	for len(m.data) > maxSize {
+		if err := m.evictOneLocked(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (m *memoryStore) Get(_ context.Context, key string) (record, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -33,6 +49,10 @@ func (m *memoryStore) Get(_ context.Context, key string) (record, bool, error) {
 		delete(m.data, key)
 		return record{}, false, nil
 	}
+	// Touch under the same lock so concurrent Set cannot be overwritten by a
+	// separate read-modify-write of lastAccessed in the cache layer.
+	rec.lastAccessed = time.Now()
+	m.data[key] = rec
 	return rec, true, nil
 }
 
@@ -82,6 +102,7 @@ func (m *memoryStore) EvictIfNeeded(ctx context.Context, maxSize int) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.deleteExpiredLocked()
 	for len(m.data) > maxSize {
 		if err := m.evictOneLocked(); err != nil {
 			return err
@@ -108,34 +129,26 @@ func (m *memoryStore) evictOneLocked() error {
 		return nil
 	}
 
-	lruKey := ""
-	var lruRecord record
-	foundAccessed := false
-
-	shortestLifeKey := ""
-	var earliestExpiry time.Time
-	foundExpiry := false
+	victimKey := ""
+	var victim record
+	found := false
 
 	for key, rec := range m.data {
-		if !foundExpiry || rec.expiry.Before(earliestExpiry) {
-			shortestLifeKey = key
-			earliestExpiry = rec.expiry
-			foundExpiry = true
-		}
-		if rec.lastAccessed.IsZero() {
+		if !found {
+			victimKey = key
+			victim = rec
+			found = true
 			continue
 		}
-		if !foundAccessed || rec.lastAccessed.Before(lruRecord.lastAccessed) {
-			lruKey = key
-			lruRecord = rec
-			foundAccessed = true
+		// Least recently accessed wins. Equal access times break ties on earliest expiry
+		// (covers inserts that share the same timestamp).
+		if rec.lastAccessed.Before(victim.lastAccessed) ||
+			(rec.lastAccessed.Equal(victim.lastAccessed) && rec.expiry.Before(victim.expiry)) {
+			victimKey = key
+			victim = rec
 		}
 	}
 
-	if foundAccessed {
-		delete(m.data, lruKey)
-		return nil
-	}
-	delete(m.data, shortestLifeKey)
+	delete(m.data, victimKey)
 	return nil
 }

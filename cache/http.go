@@ -9,7 +9,7 @@ import (
 	"strconv"
 )
 
-const defaultHTTPTTLSeconds = 60
+const maxRequestBodyBytes = 1 << 20 // 1 MiB
 
 // RegisterRoutes mounts cache HTTP endpoints on mux.
 //
@@ -74,7 +74,7 @@ func handleSet(w http.ResponseWriter, r *http.Request, c Cache) {
 	}
 
 	var profile loyalty.LoyaltyProfile
-	if err := json.NewDecoder(r.Body).Decode(&profile); err != nil {
+	if err := decodeJSONBody(w, r, &profile); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -140,7 +140,7 @@ func handleStats(w http.ResponseWriter, r *http.Request, c Cache) {
 
 func handleSetMany(w http.ResponseWriter, r *http.Request, c Cache) {
 	var batch []BatchRequest
-	if err := json.NewDecoder(r.Body).Decode(&batch); err != nil {
+	if err := decodeJSONBody(w, r, &batch); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -153,7 +153,7 @@ func handleSetMany(w http.ResponseWriter, r *http.Request, c Cache) {
 
 func handleGetMany(w http.ResponseWriter, r *http.Request, c Cache) {
 	var batch []BatchRequest
-	if err := json.NewDecoder(r.Body).Decode(&batch); err != nil {
+	if err := decodeJSONBody(w, r, &batch); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -167,7 +167,7 @@ func handleGetMany(w http.ResponseWriter, r *http.Request, c Cache) {
 
 func handleDeleteMany(w http.ResponseWriter, r *http.Request, c Cache) {
 	var batch []BatchRequest
-	if err := json.NewDecoder(r.Body).Decode(&batch); err != nil {
+	if err := decodeJSONBody(w, r, &batch); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -178,10 +178,15 @@ func handleDeleteMany(w http.ResponseWriter, r *http.Request, c Cache) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	return json.NewDecoder(r.Body).Decode(dst)
+}
+
 func parseTTL(r *http.Request) (int, error) {
 	raw := r.URL.Query().Get("ttl")
 	if raw == "" {
-		return defaultHTTPTTLSeconds, nil
+		return DefaultTTLSeconds, nil
 	}
 	ttl, err := strconv.Atoi(raw)
 	if err != nil {
@@ -200,11 +205,6 @@ func writeCacheError(w http.ResponseWriter, err error) {
 	case errors.Is(err, ErrNoKey), errors.Is(err, ErrNoData), errors.Is(err, ErrInvalidTTL):
 		writeError(w, http.StatusBadRequest, err)
 	default:
-		// Batch ops may join validation errors with others.
-		if errors.Is(err, ErrNoKey) || errors.Is(err, ErrNoData) || errors.Is(err, ErrInvalidTTL) {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
 		writeError(w, http.StatusInternalServerError, err)
 	}
 }

@@ -5,6 +5,8 @@ import "context"
 // Store is the persistence port for cache entries.
 type Store interface {
 	Put(ctx context.Context, key string, rec record) error
+	// PutAndEvict stores rec then enforces maxSize under one lock where possible.
+	PutAndEvict(ctx context.Context, key string, rec record, maxSize int) error
 	Get(ctx context.Context, key string) (record, bool, error)
 	Delete(ctx context.Context, key string) error
 	Clear(ctx context.Context) error
