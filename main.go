@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,6 +18,7 @@ func main() {
 	addr := flag.String("addr", envOr("CACHE_ADDR", ":8080"), "HTTP listen address")
 	maxSize := flag.Int("max-size", 100, "maximum cache entries")
 	cleanupSeconds := flag.Int("cleanup-interval", 30, "expired-entry cleanup interval in seconds")
+	replace := flag.Bool("replace", true, "if listen addr is busy, stop the process holding it and retry")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -44,28 +46,37 @@ func main() {
 	}
 	logger.Info("cache seeded", "entries", len(seedEntries), "ttl_seconds", seedTTLSeconds)
 
-	if err := runServer(ctx, logger, c, *addr, *cleanupSeconds); err != nil {
+	if err := runServer(ctx, logger, c, *addr, *cleanupSeconds, *replace); err != nil {
 		logger.Error("server stopped with error", "error", err)
 		os.Exit(1)
 	}
 }
 
-func runServer(ctx context.Context, logger *slog.Logger, c cache.Cache, addr string, cleanupSeconds int) error {
+func runServer(ctx context.Context, logger *slog.Logger, c cache.Cache, addr string, cleanupSeconds int, replace bool) error {
+	freed, err := ensureListenAddr(addr, replace)
+	if err != nil {
+		return err
+	}
+	if freed > 0 {
+		logger.Info("freed listen address held by previous process", "addr", addr, "processes_stopped", freed)
+	}
+
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+
 	cleanupDone := c.StartCleanup(ctx, cleanupSeconds)
 
-	mux := http.NewServeMux()
-	cache.RegisterRoutes(mux, c)
-
 	server := &http.Server{
-		Addr:              addr,
-		Handler:           mux,
+		Handler:           muxWithCache(c),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	errCh := make(chan error, 1)
 	go func() {
-		logger.Info("cache HTTP server listening", "addr", addr)
-		err := server.ListenAndServe()
+		logger.Info("cache HTTP server listening", "addr", ln.Addr().String())
+		err := server.Serve(ln)
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 			return
@@ -86,8 +97,15 @@ func runServer(ctx context.Context, logger *slog.Logger, c cache.Cache, addr str
 		<-cleanupDone
 		return <-errCh
 	case err := <-errCh:
+		<-cleanupDone
 		return err
 	}
+}
+
+func muxWithCache(c cache.Cache) http.Handler {
+	mux := http.NewServeMux()
+	cache.RegisterRoutes(mux, c)
+	return mux
 }
 
 func envOr(key, fallback string) string {
