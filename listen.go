@@ -102,7 +102,6 @@ func pidsListeningOnPortWindows(port string) ([]int, error) {
 	if err != nil {
 		return nil, err
 	}
-	suffix := ":" + port
 	seen := map[int]struct{}{}
 	var pids []int
 	for _, line := range strings.Split(string(out), "\n") {
@@ -113,7 +112,8 @@ func pidsListeningOnPortWindows(port string) ([]int, error) {
 		if !strings.EqualFold(fields[0], "TCP") {
 			continue
 		}
-		if !strings.HasSuffix(fields[1], suffix) {
+		localPort, ok := tcpLocalPort(fields[1])
+		if !ok || localPort != port {
 			continue
 		}
 		state := strings.ToUpper(fields[3])
@@ -131,6 +131,28 @@ func pidsListeningOnPortWindows(port string) ([]int, error) {
 		pids = append(pids, pid)
 	}
 	return pids, nil
+}
+
+// tcpLocalPort extracts the port from a netstat local address (e.g. 0.0.0.0:8080,
+// [::]:8080, 127.0.0.1:8080). Exact port match avoids treating :18080 as :8080.
+func tcpLocalPort(localAddr string) (string, bool) {
+	localAddr = strings.TrimSpace(localAddr)
+	if localAddr == "" {
+		return "", false
+	}
+	// netstat may show IPv6 as [::]:8080 — SplitHostPort handles that.
+	_, p, err := net.SplitHostPort(localAddr)
+	if err == nil {
+		return p, true
+	}
+	// Rare fallback: bare ":8080"
+	if strings.HasPrefix(localAddr, ":") {
+		p := strings.TrimPrefix(localAddr, ":")
+		if p != "" && !strings.Contains(p, ":") {
+			return p, true
+		}
+	}
+	return "", false
 }
 
 func pidsListeningOnPortUnix(port string) ([]int, error) {
