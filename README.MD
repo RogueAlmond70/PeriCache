@@ -18,7 +18,7 @@ Flags / env:
 | `-addr` | `CACHE_ADDR` | `:8080` | Listen address |
 | `-max-size` | — | `100` | Max live entries (LRU eviction above this) |
 | `-cleanup-interval` | — | `30` | Background expired-entry sweep interval (seconds) |
-| `-replace` | — | `true` | If the listen port is busy, stop the process holding it and bind anyway (`-replace=false` to disable) |
+| `-replace` | — | `false` | If `true` and the listen port is busy, stop the process holding it and bind (`go run . -replace`) |
 
 ---
 
@@ -53,7 +53,8 @@ Flags / env:
 ## Design decisions / trade-offs
 
 - **Lazy + periodic expiry:** expired entries are dropped on read paths (`get` / `size` / `keys`) and by a background cleanup loop.
-- **Layering:** cache package handles validation and metrics; persistence sits behind a `Store` interface with an in-memory implementation.
+- **Layering:** cache package handles validation and metrics. Persistence is a pluggable `Store` (entries are exported `Record` values) with an in-memory implementation; metrics use a pluggable `metrics.Recorder` (optional `Snapshotter` for `/cache/stats`).
+- **Profile isolation:** `LoyaltyProfile` reward slices are cloned on set and get so callers cannot mutate cached state through shared backing arrays.
 - **LRU:** on overflow, evict least-recently-accessed (`set` and `get` both update access time). Equal access times break ties on earliest expiry. Expired entries are removed before live eviction.
 - **Batch partial failure:** `set_many` / `delete_many` continue after per-item errors; the call returns `batch partially applied: …` while successful items in that request remain applied.
 - **Misses vs errors:** a missing/expired key is not a system failure; the API surfaces `ErrNotFound` so callers (and HTTP) can distinguish 404 from 500.

@@ -26,13 +26,15 @@ const (
 )
 
 // Recorder records cache domain metric events.
-// Implementations must be safe for concurrent use.
+// Alternative backends (Prometheus, etc.) can implement this interface from
+// other packages. Implementations must be safe for concurrent use.
 type Recorder interface {
 	RecordOperation(op Operation, outcome string)
 	RecordGetResult(result string)
 }
 
-// Snapshotter is optionally implemented by recorders that can serve JSON stats.
+// Snapshotter is optionally implemented by recorders that can serve JSON stats
+// (e.g. the in-memory recorder used by GET /cache/stats).
 type Snapshotter interface {
 	Snapshot() Snapshot
 }

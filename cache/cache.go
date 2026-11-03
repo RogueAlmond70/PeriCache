@@ -57,13 +57,6 @@ type BatchGetItem struct {
 	Profile *loyalty.LoyaltyProfile `json:"profile,omitempty"`
 }
 
-type record struct {
-	data         loyalty.LoyaltyProfile
-	ttl          int
-	expiry       time.Time
-	lastAccessed time.Time
-}
-
 type ourCache struct {
 	logger  internal.Logger
 	store   Store
@@ -96,7 +89,7 @@ func (c *ourCache) Get(ctx context.Context, key string) (loyalty.LoyaltyProfile,
 	if err != nil {
 		return loyalty.LoyaltyProfile{}, err
 	}
-	return rec.data, nil
+	return cloneProfile(rec.Data), nil
 }
 
 func (c *ourCache) Delete(ctx context.Context, key string) error {
@@ -203,11 +196,11 @@ func (c *ourCache) set(ctx context.Context, key string, data loyalty.LoyaltyProf
 	}
 
 	now := time.Now()
-	rec := record{
-		data:         data,
-		ttl:          ttlSeconds,
-		expiry:       now.Add(time.Duration(ttlSeconds) * time.Second),
-		lastAccessed: now, // insert counts as access so a fresh key is not immediately evicted
+	rec := Record{
+		Data:         cloneProfile(data),
+		TTL:          ttlSeconds,
+		Expiry:       now.Add(time.Duration(ttlSeconds) * time.Second),
+		LastAccessed: now, // insert counts as access so a fresh key is not immediately evicted
 	}
 	// Put + enforce maxSize atomically so a racing cancel cannot leave an oversize
 	// store with Set returning failure.
@@ -221,28 +214,28 @@ func (c *ourCache) set(ctx context.Context, key string, data loyalty.LoyaltyProf
 	return nil
 }
 
-func (c *ourCache) get(ctx context.Context, key string) (record, error) {
+func (c *ourCache) get(ctx context.Context, key string) (Record, error) {
 	if err := ctx.Err(); err != nil {
 		c.recordFailure(metrics.OpGet)
 		c.logger.Error("failed to complete get request", "error", err)
-		return record{}, fmt.Errorf("failed to complete get request: %w", err)
+		return Record{}, fmt.Errorf("failed to complete get request: %w", err)
 	}
 	if key == "" {
 		c.recordFailure(metrics.OpGet)
 		c.logger.Error("failed to complete get request", "error", ErrNoKey)
-		return record{}, fmt.Errorf("failed to complete get request: %w", ErrNoKey)
+		return Record{}, fmt.Errorf("failed to complete get request: %w", ErrNoKey)
 	}
 
 	value, ok, err := c.store.Get(ctx, key)
 	if err != nil {
 		c.recordFailure(metrics.OpGet)
 		c.logger.Error("failed to complete get request", "error", err)
-		return record{}, fmt.Errorf("failed to complete get request: %w", err)
+		return Record{}, fmt.Errorf("failed to complete get request: %w", err)
 	}
 	if !ok {
 		c.metrics.RecordGetResult(metrics.ResultMiss)
 		c.recordSuccess(metrics.OpGet)
-		return record{}, ErrNotFound
+		return Record{}, ErrNotFound
 	}
 
 	c.metrics.RecordGetResult(metrics.ResultHit)
@@ -400,7 +393,7 @@ func (c *ourCache) getMany(ctx context.Context, batch []BatchRequest) ([]BatchGe
 			items = append(items, BatchGetItem{Key: request.Key, Found: false})
 			continue
 		}
-		profile := data.data
+		profile := cloneProfile(data.Data)
 		items = append(items, BatchGetItem{
 			Key:     request.Key,
 			Found:   true,
@@ -439,4 +432,14 @@ func (c *ourCache) memoryStoreOrNil() *memoryStore {
 		return nil
 	}
 	return ms
+}
+
+// cloneProfile deep-copies slice fields so callers cannot mutate cached state
+// (and vice versa) via shared backing arrays.
+func cloneProfile(p loyalty.LoyaltyProfile) loyalty.LoyaltyProfile {
+	out := p
+	if p.Loyalty.RewardsAvailable != nil {
+		out.Loyalty.RewardsAvailable = append([]loyalty.Reward(nil), p.Loyalty.RewardsAvailable...)
+	}
+	return out
 }

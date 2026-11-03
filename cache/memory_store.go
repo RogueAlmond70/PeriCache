@@ -8,21 +8,21 @@ import (
 
 type memoryStore struct {
 	mu   sync.Mutex
-	data map[string]record
+	data map[string]Record
 }
 
 func newMemoryStore() *memoryStore {
-	return &memoryStore{data: make(map[string]record)}
+	return &memoryStore{data: make(map[string]Record)}
 }
 
-func (m *memoryStore) Put(_ context.Context, key string, rec record) error {
+func (m *memoryStore) Put(_ context.Context, key string, rec Record) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.data[key] = rec
 	return nil
 }
 
-func (m *memoryStore) PutAndEvict(ctx context.Context, key string, rec record, maxSize int) error {
+func (m *memoryStore) PutAndEvict(ctx context.Context, key string, rec Record, maxSize int) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -38,20 +38,20 @@ func (m *memoryStore) PutAndEvict(ctx context.Context, key string, rec record, m
 	return nil
 }
 
-func (m *memoryStore) Get(_ context.Context, key string) (record, bool, error) {
+func (m *memoryStore) Get(_ context.Context, key string) (Record, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	rec, ok := m.data[key]
 	if !ok {
-		return record{}, false, nil
+		return Record{}, false, nil
 	}
-	if time.Now().After(rec.expiry) {
+	if time.Now().After(rec.Expiry) {
 		delete(m.data, key)
-		return record{}, false, nil
+		return Record{}, false, nil
 	}
 	// Touch under the same lock so concurrent Set cannot be overwritten by a
-	// separate read-modify-write of lastAccessed in the cache layer.
-	rec.lastAccessed = time.Now()
+	// separate read-modify-write of LastAccessed in the cache layer.
+	rec.LastAccessed = time.Now()
 	m.data[key] = rec
 	return rec, true, nil
 }
@@ -66,7 +66,7 @@ func (m *memoryStore) Delete(_ context.Context, key string) error {
 func (m *memoryStore) Clear(_ context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.data = make(map[string]record)
+	m.data = make(map[string]Record)
 	return nil
 }
 
@@ -118,7 +118,7 @@ func (m *memoryStore) Close(_ context.Context) error {
 func (m *memoryStore) deleteExpiredLocked() {
 	now := time.Now()
 	for key, rec := range m.data {
-		if now.After(rec.expiry) {
+		if now.After(rec.Expiry) {
 			delete(m.data, key)
 		}
 	}
@@ -130,7 +130,7 @@ func (m *memoryStore) evictOneLocked() error {
 	}
 
 	victimKey := ""
-	var victim record
+	var victim Record
 	found := false
 
 	for key, rec := range m.data {
@@ -142,8 +142,8 @@ func (m *memoryStore) evictOneLocked() error {
 		}
 		// Least recently accessed wins. Equal access times break ties on earliest expiry
 		// (covers inserts that share the same timestamp).
-		if rec.lastAccessed.Before(victim.lastAccessed) ||
-			(rec.lastAccessed.Equal(victim.lastAccessed) && rec.expiry.Before(victim.expiry)) {
+		if rec.LastAccessed.Before(victim.LastAccessed) ||
+			(rec.LastAccessed.Equal(victim.LastAccessed) && rec.Expiry.Before(victim.Expiry)) {
 			victimKey = key
 			victim = rec
 		}

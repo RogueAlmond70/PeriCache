@@ -31,7 +31,7 @@ func (c *ourCache) entryCount(t *testing.T) int {
 	return len(ms.data)
 }
 
-func (c *ourCache) getRaw(t *testing.T, key string) (record, bool) {
+func (c *ourCache) getRaw(t *testing.T, key string) (Record, bool) {
 	t.Helper()
 	ms := c.mem(t)
 	ms.mu.Lock()
@@ -40,7 +40,7 @@ func (c *ourCache) getRaw(t *testing.T, key string) (record, bool) {
 	return rec, ok
 }
 
-func (c *ourCache) putRaw(t *testing.T, key string, rec record) {
+func (c *ourCache) putRaw(t *testing.T, key string, rec Record) {
 	t.Helper()
 	ms := c.mem(t)
 	ms.mu.Lock()
@@ -54,6 +54,6 @@ func (c *ourCache) expireKey(t *testing.T, key string, at time.Time) {
 	if !ok {
 		t.Fatalf("key %q missing", key)
 	}
-	rec.expiry = at
+	rec.Expiry = at
 	c.putRaw(t, key, rec)
 }

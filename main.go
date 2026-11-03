@@ -18,7 +18,7 @@ func main() {
 	addr := flag.String("addr", envOr("CACHE_ADDR", ":8080"), "HTTP listen address")
 	maxSize := flag.Int("max-size", 100, "maximum cache entries")
 	cleanupSeconds := flag.Int("cleanup-interval", 30, "expired-entry cleanup interval in seconds")
-	replace := flag.Bool("replace", true, "if listen addr is busy, stop the process holding it and retry")
+	replace := flag.Bool("replace", false, "if listen addr is busy, stop the process holding it and retry")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -66,7 +66,9 @@ func runServer(ctx context.Context, logger *slog.Logger, c cache.Cache, addr str
 		return err
 	}
 
-	cleanupDone := c.StartCleanup(ctx, cleanupSeconds)
+	cleanupCtx, cancelCleanup := context.WithCancel(ctx)
+	cleanupDone := c.StartCleanup(cleanupCtx, cleanupSeconds)
+	defer cancelCleanup()
 
 	server := &http.Server{
 		Handler:           muxWithCache(c),
@@ -91,12 +93,15 @@ func runServer(ctx context.Context, logger *slog.Logger, c cache.Cache, addr str
 		defer cancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			logger.Error("HTTP server shutdown failed", "error", err)
+			cancelCleanup()
 			<-cleanupDone
 			return err
 		}
+		cancelCleanup()
 		<-cleanupDone
 		return <-errCh
 	case err := <-errCh:
+		cancelCleanup()
 		<-cleanupDone
 		return err
 	}
